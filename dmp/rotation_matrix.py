@@ -70,3 +70,37 @@ def roto_dilatation(x0, x1):
     M = np.dot(np.transpose(Mx1), Mx0)
     M *= norm_1 / norm_0
     return M
+    
+def roto_dilatation_xy(x0, x1):
+    '''
+    Return the roto-dilatation matrix which maps x0 to x1 only around Z-axis.
+    '''
+    dims = len(x0)
+    # Write the inputs as 1D array
+    x0 = np.ndarray.flatten(x0)
+    x1 = np.ndarray.flatten(x1)
+    x0 = x0[:2]
+    x1 = x1[:2]
+    if (np.size(x0) != np.size(x1)):
+        raise ValueError(
+            'The two vectors must have the same number of components')
+
+    # Extract the norms
+    norm_0 = np.linalg.norm(x0, 2)
+    norm_1 = np.linalg.norm(x1, 2)
+    
+    # Handle zero norm cases
+    if norm_0 == 0 or norm_1 == 0:
+        raise ValueError(f"Input vectors must have non-zero norms (x0:{x0},x1:{x1}).")
+
+    # Normalize the two vectors	
+    x0_norm = x0 / norm_0
+    x1_norm = x1 / norm_1
+    Mx0 = fnAR(x0_norm)
+    Mx1 = fnAR(x1_norm)
+    M_2D = np.dot(np.transpose(Mx1), Mx0)
+    M_2D *= norm_1 / norm_0
+    M = np.eye(dims)
+    M[:2, :2] = M_2D
+    M[2, 2] *= norm_1 / norm_0
+    return M

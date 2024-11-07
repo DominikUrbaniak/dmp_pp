@@ -25,7 +25,7 @@ import pdb
 from dmp.cs import CanonicalSystem
 from dmp.exponential_integration import exp_eul_step
 from dmp.exponential_integration import phi1
-from dmp.rotation_matrix import roto_dilatation
+from dmp.rotation_matrix import roto_dilatation, roto_dilatation_xy
 from dmp.derivative_matrices import compute_D1, compute_D2
 
 class DMPs_cartesian(object):
@@ -106,6 +106,7 @@ class DMPs_cartesian(object):
         if w is None:
             w = np.zeros([self.n_dmps, self.n_bfs + 1])
         self.w = copy.deepcopy(w)
+        
 
     def compute_linear_part(self):
         '''
@@ -141,6 +142,8 @@ class DMPs_cartesian(object):
         if (self.basis == 'gaussian'):
             xi = w * (s - c) * (s - c)
             psi_set = np.exp(- xi)
+        elif (self.basis == 'rbf'):
+            psi_set = np.exp(-0.5 * 1 / w**2 * (s - c)**2)
         else:
             xi = np.abs(w * (s - c))
             if (self.basis == 'mollifier'):
@@ -163,6 +166,7 @@ class DMPs_cartesian(object):
                 psi_set = (((1.0 - xi) ** 8.0 *
                     (32.0 * xi ** 3.0 + 25.0 * xi ** 2.0 + 8.0 * xi + 1.0)) *
                     (xi < 1.0))
+            
         psi_set = np.nan_to_num(psi_set)
         return psi_set
 
@@ -187,6 +191,10 @@ class DMPs_cartesian(object):
         '''
         if (self.basis == 'gaussian'):
             self.width = 1.0 / np.diff(self.c) / np.diff(self.c)
+            self.width = np.append(self.width, self.width[-1])
+            
+        elif (self.basis == 'rbf'):
+            self.width = np.sqrt(np.diff(self.c) ** 2 / (-8 * np.log(0.9)))
             self.width = np.append(self.width, self.width[-1])
         else:
             self.width = 1.0 / np.diff(self.c)
@@ -232,7 +240,7 @@ class DMPs_cartesian(object):
             dx_des = np.dot(D1, x_des)
         else:
             dpath = np.zeros([self.cs.timesteps, self.n_dmps])
-            dpath_gen = scipy.interpolate.interp1d(t_des, dx_des)
+            dpath_gen = scipy.interpolate.interp1d(t_des, dx_des.transpose())
             dpath = dpath_gen(time)
             dx_des = dpath.transpose()
         if ddx_des is None:
@@ -240,7 +248,7 @@ class DMPs_cartesian(object):
             ddx_des = np.dot(D2, x_des)
         else:
             ddpath = np.zeros([self.cs.timesteps, self.n_dmps])
-            ddpath_gen = scipy.interpolate.interp1d(t_des, ddx_des)
+            ddpath_gen = scipy.interpolate.interp1d(t_des, ddx_des.transpose())
             ddpath = ddpath_gen(time)
             ddx_des = ddpath.transpose()
 
@@ -356,13 +364,23 @@ class DMPs_cartesian(object):
         state[range(1, 2*self.n_dmps + 1, 2)] = copy.deepcopy(self.x_0)
         if self.rescale == 'rotodilatation':
             M = roto_dilatation(self.learned_position, self.x_goal - self.x_0)
+        elif self.rescale == 'rotodilatation_xy':
+            M = roto_dilatation_xy(self.learned_position, self.x_goal - self.x_0)
         elif self.rescale == 'diagonal':
-            M = np.diag((self.x_goal - self.x_0) / self.learned_position)
+            M = np.diag((self.x_goal - self.x_0) / np.linalg.norm(self.learned_position))
+            #print("diagonal rescale: ",M)
         else:
             M = np.eye(self.n_dmps)
         psi = self.gen_psi(self.cs.s)
+        #weigthed_psi_track = np.array([psi])
+        
         f0 = (np.dot(self.w, psi[:, 0])) / (np.sum(psi[:, 0])) * self.cs.s
         f0 = np.nan_to_num(np.dot(M, f0))
+        f_track = np.array([f0])
+        activations = self.w * psi[:,0] * self.cs.s
+        sum_activations_track = np.array([np.sum(activations,axis=1)])
+        activations_track = np.array([activations])
+        	
         ddx_track = np.array([-self.D * v0 + self.K*f0])
         err = np.linalg.norm(state[range(1, 2*self.n_dmps + 1, 2)] - self.x_goal)
         P = phi1(self.cs.dt * self.linear_part / tau)
@@ -370,6 +388,13 @@ class DMPs_cartesian(object):
             psi = self.gen_psi(self.cs.s)
             f = (np.dot(self.w, psi[:, 0])) / (np.sum(psi[:, 0])) * self.cs.s
             f = np.nan_to_num(np.dot(M, f))
+            f_track = np.append(f_track, np.reshape(f,[1,self.n_dmps]),axis=0)
+            activations = self.w * psi[:,0] * self.cs.s
+            
+            #activations_track = np.append(activations_track, np.expand_dims(activations,axis=0),axis=0)
+            #sum_activations = np.sum(activations,axis=1)
+            #sum_activations_track = np.append(sum_activations_track, np.expand_dims(sum_activations,axis=0),axis=0)
+            
             beta = np.zeros(2 * self.n_dmps)
             beta[range(0, 2*self.n_dmps, 2)] = \
                 self.K * (self.x_goal * (1.0 - self.cs.s) + 
@@ -388,7 +413,7 @@ class DMPs_cartesian(object):
                     self.D * dx_track[-1] -
                     self.K * (self.x_goal - self.x_0) * self.cs.s +
                     self.K * f]), axis=0)
-        return x_track, dx_track, ddx_track, t_track
+        return x_track, dx_track, ddx_track, t_track, f_track, activations_track
 
     def step(self, tau = 1.0, error = 0.0, external_force = None,
         adapt=False, tols=None, **kwargs):
@@ -408,6 +433,8 @@ class DMPs_cartesian(object):
         # Scaling matrix
         if self.rescale == 'rotodilatation':
             M = roto_dilatation(self.learned_position, self.x_goal - self.x_0)
+        elif self.rescale == 'rotodilatation_xy':
+            M = roto_dilatation_xy(self.learned_position, self.x_goal - self.x_0)
         elif self.rescale == 'diagonal':
             M = np.diag((self.x_goal - self.x_0) / self.learned_position)
         else:
